@@ -415,6 +415,9 @@ def render_issue(url)
   issue_thread = Thread.new do
     resp = `gh issue view #{url} --json comments,body,title,author,createdAt,closedAt,assignees,labels,number`
     JSON.parse(resp)
+  rescue JSON::ParserError
+    puts 'Error parsing issue data. Please ensure the URL is correct.'
+    exit 1
   end
 
   timeline_thread = Thread.new { fetch_timeline(url) }
@@ -614,6 +617,9 @@ def render_pr(url, max_diff_lines = DEFAULT_MAX_DIFF_LINES)
   pr_thread = Thread.new do
     resp = `gh pr view #{url} --json comments,commits,reviews,body,title,author,createdAt,closedAt,mergedAt,assignees,additions,deletions,changedFiles,labels,number`
     JSON.parse(resp)
+  rescue JSON::ParserError
+    puts 'Error parsing pull request data. Please ensure the URL is correct.'
+    exit 1
   end
 
   timeline_thread = Thread.new { fetch_timeline(url) }
