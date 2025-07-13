@@ -1,6 +1,6 @@
 # gh-view-md
 
-A GitHub CLI extension that fetches GitHub issues and pull requests and renders them in markdown format, making them ideal for consumption by LLMs or markdown viewers.
+A [GitHub CLI extension](https://docs.github.com/en/github-cli/github-cli/creating-github-cli-extensions) that fetches GitHub issues and pull requests and renders them in markdown format, making them ideal for consumption by LLMs or markdown viewers.
 
 ## Installation
 
