@@ -136,7 +136,9 @@ end
 def fetch_timeline(url)
   owner, repo, number = extract_repo_info(url)
   timeline_data = `gh api repos/#{owner}/#{repo}/issues/#{number}/timeline --paginate`
-  JSON.parse(timeline_data).map { |event| TimelineEvent.new(event) }
+  JSON.parse(timeline_data).map do |event|
+    TimelineEvent.new(event) if event.is_a?(Hash) && event['event']
+  end.compact
 rescue JSON::ParserError
   []
 end
