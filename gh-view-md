@@ -16,6 +16,7 @@ require 'time'
 require 'fileutils'
 require 'open3'
 require 'optparse'
+require 'uri'
 
 DEFAULT_MAX_DIFF_LINES = 800
 
@@ -126,11 +127,19 @@ def setup_issue_directory(url)
 end
 
 def extract_repo_info(url)
-  parts = url.split('/')
-  owner = parts[3]
-  repo = parts[4]
-  number = parts[6]
-  [owner, repo, number]
+  uri = URI.parse(url)
+  path = uri.path
+  match = path.match(%r{^/([^/]+)/([^/]+)/(?:issues|pull)/(\d+)})
+  if match
+    owner = match[1]
+    repo = match[2]
+    number = match[3]
+    [owner, repo, number]
+  else
+    raise ArgumentError, "Invalid GitHub issue/PR URL format: #{url}"
+  end
+rescue URI::InvalidURIError => e
+  raise ArgumentError, "Invalid URL: #{url} - #{e.message}"
 end
 
 def fetch_timeline(url)
@@ -821,11 +830,16 @@ if url.nil?
   exit 1
 end
 
-issue_type = url.include?('/pull/') ? 'pr' : 'issue'
-rendered = case issue_type
-           when 'pr'
-             render_pr(url, options[:max_diff_lines])
-           when 'issue'
-             render_issue(url)
-           end
+begin
+  extract_repo_info(url)
+rescue ArgumentError => e
+  puts "Error: #{e.message}"
+  exit 1
+end
+
+if url.include?('/pull/')
+  rendered = render_pr(url, options[:max_diff_lines])
+else
+  rendered = render_issue(url)
+end
 puts rendered
