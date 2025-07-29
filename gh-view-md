@@ -130,14 +130,12 @@ def extract_repo_info(url)
   uri = URI.parse(url)
   path = uri.path
   match = path.match(%r{^/([^/]+)/([^/]+)/(?:issues|pull)/(\d+)})
-  if match
-    owner = match[1]
-    repo = match[2]
-    number = match[3]
-    [owner, repo, number]
-  else
-    raise ArgumentError, "Invalid GitHub issue/PR URL format: #{url}"
-  end
+  raise ArgumentError, "Invalid GitHub issue/PR URL format: #{url}" unless match
+
+  owner = match[1]
+  repo = match[2]
+  number = match[3]
+  [owner, repo, number]
 rescue URI::InvalidURIError => e
   raise ArgumentError, "Invalid URL: #{url} - #{e.message}"
 end
@@ -158,17 +156,15 @@ def download_images_for_issue(url, issue_dir)
 
   # Parallelize API calls - get both body and body_html in one request
   body_thread = Thread.new do
-    begin
-      if is_pr
-        resp = `gh api repos/#{owner}/#{repo}/pulls/#{number} -H "Accept: application/vnd.github.html+json --json body,body_html"`
-      else
-        resp = `gh api repos/#{owner}/#{repo}/issues/#{number} -H "Accept: application/vnd.github.html+json --json body,body_html"`
-      end
-      data = JSON.parse(resp)
-      [data['body_html'] || '', data['body'] || '']
-    rescue JSON::ParserError
-      ['', '']
+    if is_pr
+      resp = `gh api repos/#{owner}/#{repo}/pulls/#{number} -H "Accept: application/vnd.github.html+json --json body,body_html"`
+    else
+      resp = `gh api repos/#{owner}/#{repo}/issues/#{number} -H "Accept: application/vnd.github.html+json --json body,body_html"`
     end
+    data = JSON.parse(resp)
+    [data['body_html'] || '', data['body'] || '']
+  rescue JSON::ParserError
+    ['', '']
   end
 
   comments_html_thread = Thread.new do
@@ -307,14 +303,62 @@ def render_review(review, image_map = {})
   str.join("\n")
 end
 
-def render_review_comment(review_comment, image_map = {})
-  str = ["## #{render_user(review_comment.user)} [commented #{render_time(review_comment.created_at)}](#{review_comment.html_url})"]
+def group_review_comments_by_thread(review_comments)
+  # Group comments by common location (path, line, position)
+  # Comments on the same code location are part of the same thread
+  grouped = {}
+
+  review_comments.each do |comment|
+    # Create a key based on file path and position
+    # Use original_position as fallback for position to handle outdated comments
+    comment.position || comment.original_position
+    comment.line || comment.original_line
+
+    # Group by path and diff_hunk (which uniquely identifies the code context)
+    # This handles both line comments and multi-line comments
+    key = [comment.path, comment.diff_hunk].compact.join('::')
+
+    if grouped[key]
+      grouped[key] << comment
+    else
+      grouped[key] = [comment]
+    end
+  end
+
+  # Sort comments within each thread by creation time
+  grouped.values.map { |thread| thread.sort_by { |c| c.created_at } }
+end
+
+def render_review_comment(review_comment, image_map = {}, is_reply = false)
+  prefix = is_reply ? '### ' : '## '
+  action = is_reply ? 'replied' : 'commented'
+  str = ["#{prefix}#{render_user(review_comment.user)} [#{action} #{render_time(review_comment.created_at)}](#{review_comment.html_url})"]
   str << ''
-  str << "file: #{review_comment.path}"
-  str << "```diff\n#{review_comment.diff_hunk}\n```" if review_comment.diff_hunk&.length&.positive?
+
   body = hydrate_issue_links(strip_html_comments(review_comment.body))
   body = replace_image_urls(body, image_map) unless image_map.empty?
+
   str << body
+  str.join("\n")
+end
+
+def render_review_comment_thread(thread, image_map = {})
+  return '' if thread.empty?
+
+  str = []
+  first_comment = thread.first
+
+  # Thread header with file and diff context
+  str << "## Review thread on `#{first_comment.path}`"
+  str << ''
+  str << "```diff\n#{first_comment.diff_hunk}\n```" if first_comment.diff_hunk&.length&.positive?
+
+  # Render all comments in the thread
+  thread.each_with_index do |comment, index|
+    str << '' if index > 0 # Add spacing between comments
+    str << render_review_comment(comment, image_map, index > 0)
+  end
+
   str.join("\n")
 end
 
@@ -514,22 +558,16 @@ def render_issue(url)
   str.join("\n")
 rescue JSON::ParserError => e
   # Check if we can access the response from any of the threads
-  if issue_thread && issue_thread.alive?
-    issue_thread.kill
-  end
-  if timeline_thread && timeline_thread.alive?
-    timeline_thread.kill
-  end
-  if image_thread && image_thread.alive?
-    image_thread.kill
-  end
+  issue_thread.kill if issue_thread && issue_thread.alive?
+  timeline_thread.kill if timeline_thread && timeline_thread.alive?
+  image_thread.kill if image_thread && image_thread.alive?
 
   # Try to get the response for error messages
   resp = `gh issue view #{url} 2>&1`
   if resp.include?('Not Found')
     "Issue not found: #{url}"
   elsif resp.include?('rate limit')
-    sleep(1 + rand)
+    FlowCore::Framework::Sleep.sleep(1 + rand)
     retry
   else
     "Error parsing issue: #{e.message}"
@@ -564,13 +602,13 @@ end
 def render_check_status(check_data)
   return nil if check_data.nil?
 
-  str = ["## CI/Checks Status"]
+  str = ['## CI/Checks Status']
 
   # Render status checks (legacy)
   status = check_data[:status]
   if status && status['statuses'] && !status['statuses'].empty?
-    str << ""
-    str << "### Status Checks"
+    str << ''
+    str << '### Status Checks'
     status['statuses'].each do |s|
       icon = case s['state']
              when 'success' then '✅'
@@ -585,8 +623,8 @@ def render_check_status(check_data)
 
   # Render check runs
   if check_data[:check_runs] && !check_data[:check_runs].empty?
-    str << "" unless status && status['statuses'] && !status['statuses'].empty?
-    str << "### Check Runs"
+    str << '' unless status && status['statuses'] && !status['statuses'].empty?
+    str << '### Check Runs'
     check_data[:check_runs].each do |check|
       icon = case check['conclusion']
              when 'success' then '✅'
@@ -602,14 +640,14 @@ def render_check_status(check_data)
                else '❓'
                end
              end
-      details_link = check['details_url'] ? " ([details](#{check['details_url']}))" : ""
+      details_link = check['details_url'] ? " ([details](#{check['details_url']}))" : ''
       str << "- #{icon} **#{check['name']}**: #{check['conclusion'] || check['status']}#{details_link}"
     end
   end
 
   # Overall status
   if status && status['state']
-    str << ""
+    str << ''
     overall_icon = case status['state']
                    when 'success' then '✅'
                    when 'failure' then '❌'
@@ -636,11 +674,9 @@ def render_pr(url, max_diff_lines = DEFAULT_MAX_DIFF_LINES)
   timeline_thread = Thread.new { fetch_timeline(url) }
 
   review_comments_thread = Thread.new do
-    begin
-      JSON.parse(`gh api repos/#{url.split('/')[3]}/#{url.split('/')[4]}/pulls/#{url.split('/')[6]}/comments`)
-    rescue JSON::ParserError
-      []
-    end
+    JSON.parse(`gh api repos/#{url.split('/')[3]}/#{url.split('/')[4]}/pulls/#{url.split('/')[6]}/comments`)
+  rescue JSON::ParserError
+    []
   end
 
   # Setup directory while other operations run
@@ -664,11 +700,7 @@ def render_pr(url, max_diff_lines = DEFAULT_MAX_DIFF_LINES)
   image_thread = Thread.new { download_images_for_issue(url, issue_dir) }
 
   check_status_thread = Thread.new do
-    if data['closedAt'].nil? && data['mergedAt'].nil?
-      fetch_check_status(url)
-    else
-      nil
-    end
+    fetch_check_status(url) if data['closedAt'].nil? && data['mergedAt'].nil?
   end
 
   # Wait for remaining results
@@ -688,20 +720,32 @@ def render_pr(url, max_diff_lines = DEFAULT_MAX_DIFF_LINES)
   str << ''
   str << diff
   str << ''
+  # Process review comments into threads
+  review_comment_objects = review_comments.map { |comment| ReviewComment.new(comment) }
+  review_comment_threads = group_review_comments_by_thread(review_comment_objects)
+
+  # Create entries for non-review-comment items
   entries = data['comments']
             .map { |comment| Comment.new(comment) }
             .concat(data['reviews'].map { |review| Review.new(review) })
-            .concat(review_comments.map { |comment| ReviewComment.new(comment) })
             .concat(data['commits'].map { |commit| Commit.new(commit) })
             .concat(timeline_events)
-            .sort_by do |entry|
+
+  # Add review comment threads as special entries
+  # We'll use the first comment's timestamp for sorting
+  review_thread_entries = review_comment_threads.map do |thread|
+    { type: :review_thread, thread: thread, timestamp: thread.first.created_at }
+  end
+
+  # Combine and sort all entries
+  all_entries = entries.concat(review_thread_entries).sort_by do |entry|
     timestamp = case entry
+                when Hash # REVIEW: thread entry
+                  entry[:timestamp]
                 when Comment
                   entry.createdAt
                 when Review
                   entry.submittedAt
-                when ReviewComment
-                  entry.created_at
                 when Commit
                   entry.committedDate
                 when TimelineEvent
@@ -713,7 +757,7 @@ def render_pr(url, max_diff_lines = DEFAULT_MAX_DIFF_LINES)
   timeline_events_to_group = []
   final_entries = []
 
-  entries.each do |entry|
+  all_entries.each do |entry|
     if entry.is_a?(TimelineEvent)
       timeline_events_to_group << entry
     else
@@ -728,29 +772,32 @@ def render_pr(url, max_diff_lines = DEFAULT_MAX_DIFF_LINES)
       end
 
       # Add non-timeline event
-      timestamp = case entry
-                  when Comment
-                    entry.createdAt
-                  when Review
-                    entry.submittedAt
-                  when ReviewComment
-                    entry.created_at
-                  when Commit
-                    entry.committedDate
-                  end
+      if entry.is_a?(Hash) && entry[:type] == :review_thread
+        # Handle review thread
+        timestamp = entry[:timestamp]
+        rendered = render_review_comment_thread(entry[:thread], image_map)
+        final_entries << [timestamp, rendered] if rendered
+      else
+        timestamp = case entry
+                    when Comment
+                      entry.createdAt
+                    when Review
+                      entry.submittedAt
+                    when Commit
+                      entry.committedDate
+                    end
 
-      rendered = case entry
-                 when Comment
-                   render_comment(entry, image_map)
-                 when Review
-                   render_review(entry, image_map)
-                 when ReviewComment
-                   render_review_comment(entry, image_map)
-                 when Commit
-                   render_commit(entry)
-                 end
+        rendered = case entry
+                   when Comment
+                     render_comment(entry, image_map)
+                   when Review
+                     render_review(entry, image_map)
+                   when Commit
+                     render_commit(entry)
+                   end
 
-      final_entries << [timestamp, rendered] if rendered
+        final_entries << [timestamp, rendered] if rendered
+      end
     end
   end
 
@@ -800,7 +847,7 @@ rescue JSON::ParserError => e
   if resp.include?('Not Found')
     "PR not found: #{url}"
   elsif resp.include?('rate limit')
-    sleep(1 + rand)
+    FlowCore::Framework::Sleep.sleep(1 + rand)
     retry
   else
     "Error parsing PR: #{e.message}"
@@ -810,13 +857,13 @@ end
 options = { max_diff_lines: DEFAULT_MAX_DIFF_LINES }
 
 OptionParser.new do |opts|
-  opts.banner = "Usage: gh view-md <github_issue_or_pr_url> [options]"
+  opts.banner = 'Usage: gh view-md <github_issue_or_pr_url> [options]'
 
-  opts.on("--max-diff LINES", Integer, "Maximum diff lines to show (default: #{DEFAULT_MAX_DIFF_LINES})") do |lines|
+  opts.on('--max-diff LINES', Integer, "Maximum diff lines to show (default: #{DEFAULT_MAX_DIFF_LINES})") do |lines|
     options[:max_diff_lines] = lines
   end
 
-  opts.on("-h", "--help", "Show this help message") do
+  opts.on('-h', '--help', 'Show this help message') do
     puts opts
     exit
   end
@@ -825,8 +872,8 @@ end.parse!
 url = ARGV[0]
 
 if url.nil?
-  puts "Error: GitHub URL required"
-  puts "Usage: gh view-md <github_issue_or_pr_url> [options]"
+  puts 'Error: GitHub URL required'
+  puts 'Usage: gh view-md <github_issue_or_pr_url> [options]'
   exit 1
 end
 
@@ -837,9 +884,9 @@ rescue ArgumentError => e
   exit 1
 end
 
-if url.include?('/pull/')
-  rendered = render_pr(url, options[:max_diff_lines])
-else
-  rendered = render_issue(url)
-end
+rendered = if url.include?('/pull/')
+             render_pr(url, options[:max_diff_lines])
+           else
+             render_issue(url)
+           end
 puts rendered
