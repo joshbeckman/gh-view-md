@@ -117,6 +117,16 @@ def strip_html_comments(string)
   string.gsub(/<!--.*?-->/m, '')
 end
 
+def render_projects(project_items)
+  return nil if project_items.nil? || project_items.empty?
+
+  entries = project_items.map do |item|
+    status = item['status'] && item['status']['name']
+    status ? "#{item['title']} (#{status})" : item['title']
+  end
+  "## Projects: #{entries.join(', ')}"
+end
+
 def setup_issue_directory(url)
   # Remove protocol and create directory path
   url_path = url.gsub(%r{^https?://}, '')
@@ -468,7 +478,7 @@ end
 def render_issue(url)
   # Parallelize initial data fetching
   issue_thread = Thread.new do
-    resp = `gh issue view #{url} --json comments,body,title,author,createdAt,closedAt,assignees,labels,number`
+    resp = `gh issue view #{url} --json comments,body,title,author,createdAt,closedAt,assignees,labels,number,projectItems`
     JSON.parse(resp)
   rescue JSON::ParserError
     puts 'Error parsing issue data. Please ensure the URL is correct.'
@@ -548,6 +558,11 @@ def render_issue(url)
 
   str << ''
   str << "## Labeled: #{data['labels'].map { |label| label['name'] }.join(', ')}" unless data['labels'].empty?
+  projects = render_projects(data['projectItems'])
+  if projects
+    str << ''
+    str << projects
+  end
   if data['closedAt']
     str << ''
     str << "## Closed #{render_time(data['closedAt'])}"
@@ -664,7 +679,7 @@ end
 def render_pr(url, max_diff_lines = DEFAULT_MAX_DIFF_LINES)
   # Parallelize all initial data fetching
   pr_thread = Thread.new do
-    resp = `gh pr view #{url} --json comments,commits,reviews,body,title,author,createdAt,closedAt,mergedAt,assignees,additions,deletions,changedFiles,labels,number`
+    resp = `gh pr view #{url} --json comments,commits,reviews,body,title,author,createdAt,closedAt,mergedAt,assignees,additions,deletions,changedFiles,labels,number,projectItems`
     JSON.parse(resp)
   rescue JSON::ParserError
     puts 'Error parsing pull request data. Please ensure the URL is correct.'
@@ -817,6 +832,11 @@ def render_pr(url, max_diff_lines = DEFAULT_MAX_DIFF_LINES)
   end
   str << ''
   str << "## Labeled: #{data['labels'].map { |label| label['name'] }.join(', ')}" unless data['labels'].empty?
+  projects = render_projects(data['projectItems'])
+  if projects
+    str << ''
+    str << projects
+  end
   if data['mergedAt']
     str << ''
     str << "## Merged #{render_time(data['mergedAt'])}"
