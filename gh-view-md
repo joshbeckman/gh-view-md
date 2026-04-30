@@ -152,7 +152,7 @@ def render_participants(name_map)
   return nil if name_map.empty?
 
   lines = ['## Participants', '']
-  name_map.sort.each { |login, name| lines << "- @#{login} — #{name}" }
+  name_map.sort.each { |login, name| lines << "- @#{login}: #{name}" }
   lines.join("\n")
 end
 
