@@ -117,6 +117,45 @@ def strip_html_comments(string)
   string.gsub(/<!--.*?-->/m, '')
 end
 
+def collect_participant_logins(data, timeline_events, review_comments = nil)
+  logins = []
+  logins << data['author']['login'] if data['author']
+  data['comments']&.each { |c| logins << c['author']['login'] if c['author'] }
+  data['reviews']&.each { |r| logins << r['author']['login'] if r['author'] }
+  data['assignees']&.each { |a| logins << a['login'] if a }
+  review_comments&.each { |rc| logins << rc['user']['login'] if rc['user'] }
+  timeline_events.each do |e|
+    logins << e.actor['login'] if e.actor
+    logins << e.assignee['login'] if e.assignee
+    logins << e.requested_reviewer['login'] if e.requested_reviewer
+    logins << e.review_requester['login'] if e.review_requester
+  end
+  logins.compact.uniq.reject { |l| l.end_with?('[bot]') }
+end
+
+def fetch_participant_names(logins)
+  return {} if logins.empty?
+
+  threads = logins.map do |login|
+    Thread.new do
+      resp = `gh api users/#{login} 2>/dev/null`
+      name = JSON.parse(resp)['name']
+      [login, (name.nil? || name.strip.empty?) ? nil : name]
+    rescue JSON::ParserError
+      [login, nil]
+    end
+  end
+  threads.map(&:value).reject { |_, name| name.nil? }.to_h
+end
+
+def render_participants(name_map)
+  return nil if name_map.empty?
+
+  lines = ['## Participants', '']
+  name_map.sort.each { |login, name| lines << "- @#{login} — #{name}" }
+  lines.join("\n")
+end
+
 def setup_issue_directory(url)
   # Remove protocol and create directory path
   url_path = url.gsub(%r{^https?://}, '')
@@ -488,6 +527,10 @@ def render_issue(url)
   timeline_events = timeline_thread.value
   image_map = image_thread.value
 
+  participants_thread = Thread.new do
+    fetch_participant_names(collect_participant_logins(data, timeline_events))
+  end
+
   str = ["# Issue ##{data['number']}: [#{data['title']}](#{url}) opened by #{render_user(data['author'])} #{render_time(data['createdAt'])}"]
   str << ''
   body = hydrate_issue_links(strip_html_comments(data['body']))
@@ -554,6 +597,11 @@ def render_issue(url)
   elsif data['assignees'].length > 0
     str << ''
     str << "## Assigned to: #{data['assignees'].map { |assignee| render_user(assignee) }.join(', ')}"
+  end
+  participants = render_participants(participants_thread.value)
+  if participants
+    str << ''
+    str << participants
   end
   str.join("\n")
 rescue JSON::ParserError => e
@@ -710,6 +758,10 @@ def render_pr(url, max_diff_lines = DEFAULT_MAX_DIFF_LINES)
   image_map = image_thread.value
   check_status_data = check_status_thread.value
 
+  participants_thread = Thread.new do
+    fetch_participant_names(collect_participant_logins(data, timeline_events, review_comments))
+  end
+
   str = ["# Pull Request ##{data['number']}: [#{data['title']}](#{url}) opened by #{render_user(data['author'])} #{render_time(data['createdAt'])}"]
   str << ''
   body = hydrate_issue_links(strip_html_comments(data['body']))
@@ -834,6 +886,12 @@ def render_pr(url, max_diff_lines = DEFAULT_MAX_DIFF_LINES)
       str << ''
       str << check_status_output
     end
+  end
+
+  participants = render_participants(participants_thread.value)
+  if participants
+    str << ''
+    str << participants
   end
 
   str.join("\n")
