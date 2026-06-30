@@ -1,4 +1,4 @@
-#!/usr/bin/env ruby
+#!/usr/bin/env -S ruby --disable-gems
 # frozen_string_literal: true
 
 # This is a script that fetches a GitHub issue and its comments and prints them in markdown format.
