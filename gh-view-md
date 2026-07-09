@@ -208,9 +208,9 @@ end
 
 def render_sub_issue_state(state)
   case state
-  when 'CLOSED' then '✅'
-  when 'OPEN' then '⬜'
-  else '⬜'
+  when 'CLOSED' then '[x]'
+  when 'OPEN' then '[ ]'
+  else '[ ]'
   end
 end
 
