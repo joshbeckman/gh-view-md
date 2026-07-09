@@ -150,6 +150,70 @@ rescue JSON::ParserError
   []
 end
 
+def fetch_sub_issues(url)
+  owner, repo, number = extract_repo_info(url)
+  query = <<~GRAPHQL
+    query($owner:String!,$repo:String!,$number:Int!){
+      repository(owner:$owner,name:$repo){
+        issue(number:$number){
+          subIssuesSummary{total completed percentCompleted}
+          parent{number title url state}
+          subIssues(first:100){
+            nodes{number title url state}
+          }
+        }
+      }
+    }
+  GRAPHQL
+  resp, = Open3.capture2(
+    'gh', 'api', 'graphql',
+    '-f', "query=#{query}",
+    '-F', "owner=#{owner}",
+    '-F', "repo=#{repo}",
+    '-F', "number=#{number}"
+  )
+  JSON.parse(resp).dig('data', 'repository', 'issue') || {}
+rescue JSON::ParserError
+  {}
+end
+
+def render_sub_issues(issue_data)
+  return nil if issue_data.nil? || issue_data.empty?
+
+  parent = issue_data['parent']
+  sub_issues = issue_data.dig('subIssues', 'nodes') || []
+  summary = issue_data['subIssuesSummary'] || {}
+  return nil if parent.nil? && sub_issues.empty?
+
+  str = []
+  if parent
+    str << "## Parent issue"
+    str << ''
+    str << "- #{render_sub_issue_state(parent['state'])} [##{parent['number']}: #{parent['title']}](#{parent['url']})"
+    str << ''
+  end
+
+  unless sub_issues.empty?
+    total = summary['total'] || sub_issues.length
+    completed = summary['completed'] || 0
+    str << "## Sub-issues (#{completed}/#{total} completed)"
+    str << ''
+    sub_issues.each do |sub|
+      str << "- #{render_sub_issue_state(sub['state'])} [##{sub['number']}: #{sub['title']}](#{sub['url']})"
+    end
+  end
+
+  str.join("\n")
+end
+
+def render_sub_issue_state(state)
+  case state
+  when 'CLOSED' then '✅'
+  when 'OPEN' then '⬜'
+  else '⬜'
+  end
+end
+
 def download_images_for_issue(url, issue_dir)
   owner, repo, number = extract_repo_info(url)
   is_pr = url.include?('/pull/')
@@ -477,6 +541,8 @@ def render_issue(url)
 
   timeline_thread = Thread.new { fetch_timeline(url) }
 
+  sub_issues_thread = Thread.new { fetch_sub_issues(url) }
+
   # Setup directory while other operations run
   issue_dir = setup_issue_directory(url)
 
@@ -486,6 +552,7 @@ def render_issue(url)
   # Wait for results
   data = issue_thread.value
   timeline_events = timeline_thread.value
+  sub_issues_data = sub_issues_thread.value
   image_map = image_thread.value
 
   str = ["# Issue ##{data['number']}: [#{data['title']}](#{url}) opened by #{render_user(data['author'])} #{render_time(data['createdAt'])}"]
@@ -494,6 +561,12 @@ def render_issue(url)
   body = replace_image_urls(body, image_map) unless image_map.empty?
   str << body
   str << ''
+
+  sub_issues_output = render_sub_issues(sub_issues_data)
+  if sub_issues_output
+    str << sub_issues_output
+    str << ''
+  end
 
   # Combine comments and timeline events
   comments = data['comments'].map { |comment| Comment.new(comment) }
@@ -560,6 +633,7 @@ rescue JSON::ParserError => e
   # Check if we can access the response from any of the threads
   issue_thread.kill if issue_thread && issue_thread.alive?
   timeline_thread.kill if timeline_thread && timeline_thread.alive?
+  sub_issues_thread.kill if sub_issues_thread && sub_issues_thread.alive?
   image_thread.kill if image_thread && image_thread.alive?
 
   # Try to get the response for error messages

@@ -67,6 +67,7 @@ gh view-md https://github.com/owner/repo/pull/456 | llm "Summarize this PR"
 - **Full body content**: Original description with HTML comments stripped
 - **Comments**: All comments with timestamps and author information
 - **Timeline events**: Labels, assignments, milestones, state changes, etc.
+- **Sub-issues**: Native GitHub parent/sub-issue relationships with completion progress and per-child state
 - **PR-specific content**:
   - Code diffs (with size limits)
   - Review comments with file context
