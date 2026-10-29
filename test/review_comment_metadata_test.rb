@@ -9,10 +9,16 @@ require 'fileutils'
 
 script = File.expand_path('../gh-view-md', __dir__)
 Dir.mktmpdir('gh-view-md-test-') do |dir|
+  # Reserve a unique owner directory in the CLI's hardcoded cache root.
+  FileUtils.mkdir_p('/tmp/gh_issue/github.com')
+  cache_dir = Dir.mktmpdir('gh-view-md-test-', '/tmp/gh_issue/github.com')
+  owner = File.basename(cache_dir)
+  url = "https://github.com/#{owner}/repo/pull/1"
   # Exercise the real CLI offline, including JSON decoding and thread rendering.
   File.write(File.join(dir, 'gh'), <<~'FAKE_GH')
     #!/usr/bin/env -S ruby --disable-gems
     require 'json'
+    owner = ENV.fetch('TEST_OWNER')
     case ARGV.first(2)
     when ['pr', 'view']
       puts JSON.generate(
@@ -24,13 +30,13 @@ Dir.mktmpdir('gh-view-md-test-') do |dir|
       )
     when ['pr', 'diff']
       puts '+example'
-    when ['api', 'repos/example/repo/pulls/1/comments']
+    when ['api', "repos/#{owner}/repo/pulls/1/comments"]
       puts File.read(ENV.fetch('REVIEW_COMMENTS_FIXTURE'))
-    when ['api', 'repos/example/repo/issues/1/timeline']
+    when ['api', "repos/#{owner}/repo/issues/1/timeline"]
       puts '[]'
-    when ['api', 'repos/example/repo/pulls/1']
+    when ['api', "repos/#{owner}/repo/pulls/1"]
       puts '{}'
-    when ['api', 'repos/example/repo/issues/1/comments']
+    when ['api', "repos/#{owner}/repo/issues/1/comments"]
       # No images.
     else
       abort "Unexpected gh invocation: #{ARGV.inspect}"
@@ -41,18 +47,18 @@ Dir.mktmpdir('gh-view-md-test-') do |dir|
   comment = {
     'id' => 1, 'user' => { 'login' => 'reviewer' }, 'body' => 'Please adjust this line.',
     'created_at' => '2026-01-01T01:00:00Z',
-    'html_url' => 'https://github.com/example/repo/pull/1#discussion_r1',
+    'html_url' => "#{url}#discussion_r1",
     'path' => 'example.rb', 'diff_hunk' => '@@ -1 +1 @@',
     'line' => 1, 'position' => 1
   }
   reply = comment.merge(
     'id' => 2, 'in_reply_to_id' => 1, 'user' => { 'login' => 'author' },
     'body' => 'Updated as requested.', 'created_at' => '2026-01-01T02:00:00Z',
-    'html_url' => 'https://github.com/example/repo/pull/1#discussion_r2'
+    'html_url' => "#{url}#discussion_r2"
   )
   fixture = File.join(dir, 'comments.json')
   env = { 'PATH' => "#{dir}:#{ENV.fetch('PATH')}", 'REVIEW_COMMENTS_FIXTURE' => fixture,
-          'TMPDIR' => dir }
+          'TEST_OWNER' => owner }
   outputs = {}
   {
     'legacy payload' => {},
@@ -63,7 +69,7 @@ Dir.mktmpdir('gh-view-md-test-') do |dir|
   }.each do |name, metadata|
     File.write(fixture, JSON.generate([comment.merge(metadata), reply.merge(metadata)]))
     stdout, stderr, status = Open3.capture3(env, RbConfig.ruby, '--disable-gems', script,
-                                          'https://github.com/example/repo/pull/1')
+                                          url)
     raise "#{name}: CLI failed (#{status.exitstatus}): #{stderr}" unless status.success?
     raise "#{name}: unexpected stderr: #{stderr}" unless stderr.empty?
     ['# Pull Request #1:', 'PR description', '## Review thread on `example.rb`',
@@ -77,5 +83,5 @@ Dir.mktmpdir('gh-view-md-test-') do |dir|
   end
   raise 'API metadata changed rendered content' unless outputs.values.uniq.length == 1
 ensure
-  FileUtils.rm_rf('/tmp/gh_issue/github.com/example/repo/pull/1')
+  FileUtils.rm_rf(cache_dir) if cache_dir
 end
