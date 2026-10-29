@@ -795,7 +795,11 @@ def render_pr(url, max_diff_lines = DEFAULT_MAX_DIFF_LINES)
   str << diff
   str << ''
   # Process review comments into threads
-  review_comment_objects = review_comments.map { |comment| ReviewComment.new(comment) }
+  review_comment_objects = review_comments.map do |comment|
+    # REST responses can gain metadata that this renderer does not use.
+    attributes = comment.select { |key, _| ReviewComment.members.include?(key.to_sym) }
+    ReviewComment.new(attributes)
+  end
   review_comment_threads = group_review_comments_by_thread(review_comment_objects)
 
   # Create entries for non-review-comment items

@@ -102,6 +102,14 @@ For pull requests with large diffs (exceeding the `--max-diff` threshold), only 
 - **Reporting**: Generate markdown reports that can be converted to other formats
 - **Review Preparation**: Get a complete view of a PR before review meetings
 
+## Tests
+
+Run the offline CLI regression tests without installing gems or authenticating GitHub:
+
+```bash
+ruby --disable-gems test/review_comment_metadata_test.rb
+```
+
 ## License
 
 This project follows standard open source practices. Check the repository for specific license information.
